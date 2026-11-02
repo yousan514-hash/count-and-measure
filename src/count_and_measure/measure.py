@@ -124,6 +124,8 @@ def _foreground_mask(gray: np.ndarray, marker_region: np.ndarray | None) -> np.n
     # 背景が明るい（紙）か暗い（布）か。決まった明るさで決めると、暗い部屋の白い紙や、
     # 片側だけ影になった紙で間違える。そこで両方の前提で照明をならして2値化し、
     # 画像の縁がより「背景」として残るほうを選ぶ（物は縁にはあまりかからない）
+    # ※ 明るい方向・暗い方向の両方に外れた所を物とする方法も試したが、白い紙の上の1円玉
+    #   （背景との差が小さい）を見落として悪くなった（experiments/README.md の 3回目）
     best = None
     for bright in (True, False):
         flat = _flatten_lighting(blur, bright)
@@ -229,9 +231,9 @@ def measure_image(
     pad = 0
     if keep_edge:
         # 縁に背景色の余白を足して、縁に触れた物も閉じた輪郭にする
-        border = np.concatenate([gray[0, :], gray[-1, :], gray[:, 0], gray[:, -1]])
         pad = 20
-        gray = cv2.copyMakeBorder(gray, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=int(np.median(border)))
+        gray = cv2.copyMakeBorder(gray, pad, pad, pad, pad, cv2.BORDER_CONSTANT,
+                                  value=int(np.median(_border_pixels(gray))))
 
     if ref_mm is None:
         corners = detect_marker(gray, dict_name)

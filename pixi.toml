@@ -2,7 +2,7 @@
 name = "count-and-measure"
 description = "写真から物を数えて、大きさを mm で測るツール（OpenCV）"
 channels = ["https://prefix.dev/conda-forge"]
-platforms = ["win-64"]
+platforms = ["win-64", "linux-64"]
 
 [dependencies]
 python = "3.12.*"

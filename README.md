@@ -1,5 +1,7 @@
 # count-and-measure
 
+[![test](https://github.com/yousan514-hash/count-and-measure/actions/workflows/test.yml/badge.svg)](https://github.com/yousan514-hash/count-and-measure/actions/workflows/test.yml)
+
 写真から**物を数えて、1つずつの大きさを mm で測る**ツールです（Python / OpenCV）。
 
 物差しは2通りあります。
@@ -94,7 +96,7 @@ pixi run measure cropped.png --ref-mm 26.5 --keep-edge
 | ルール | 理由 |
 |---|---|
 | **真上から撮る**（硬貨を物差しにするとき） | 10度傾くだけで誤差が 9% になる。**マーカーを使えば、斜めでも自動で補正**する |
-| **背景は物と違う色にする**（銀色の物なら黒い布） | 背景と物が同じ明るさだと見分けられない |
+| **背景は白い紙か、明るい灰色にする** | 明るい灰色（銀色の硬貨とほぼ同じ明るさ）までは測れた。暗い灰色の机だと見分けられない |
 | **暗すぎる場所で撮らない** | 明るさ 30% までは大丈夫、15% だと見つからない |
 | **物同士は少し離す** | 少し触れる程度なら自動で分けるが、重なると誤差が大きくなる |
 | マーカーは**物と同じ高さ**に置く | 高さが違うと、物差しの長さがずれる |
@@ -118,7 +120,8 @@ pixi run measure cropped.png --ref-mm 26.5 --keep-edge
 - [x] くっついた物を分けて数える（Watershed）
 - [x] 斜めから撮った写真を補正する（マーカーで台形補正）
 - [x] 照明のむら・暗い写真・強いノイズへの対策
-- [ ] 背景と物が同じ明るさのとき、色も使って分ける
+- [x] 背景と物が近い明るさのときの確認（明るい灰色までは OK。明暗両方向で分ける方法は試したが悪化したので不採用）
+- [ ] 硬貨以外（ネジ・ナット・豆など）で試す
 - [ ] 色や形で種類を分けて、種類ごとに数える
 
 ## 開発
@@ -129,6 +132,8 @@ pixi run test     # テスト
 ```
 
 環境: Windows 11 / Python 3.12 / OpenCV 5.0 / pixi
+
+GitHub Actions で、push のたびに Windows と Linux でテストと撮影条件の実験を自動で動かしています（[.github/workflows/test.yml](.github/workflows/test.yml)）。
 
 ## ライセンス
 

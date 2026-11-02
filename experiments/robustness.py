@@ -82,13 +82,32 @@ def touching(img, px):
     return out
 
 
-def background(img, level):
-    """背景の色を変える（level: 白い紙 0 → 1 で灰色の机）。硬貨と背景の明るさの差が小さくなる。"""
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    bg_mask = (gray > 200).astype(np.float32)
-    bg_mask = cv2.GaussianBlur(bg_mask, (15, 15), 0)[..., None]
-    target = np.array([150, 150, 150], np.float32)
-    mixed = img.astype(np.float32) * (1 - level * bg_mask) + target * level * bg_mask
+_COIN_MASK = None
+
+
+def _coin_mask(img):
+    """元の写真の硬貨の部分（PDCA 2回目の方法で、正しく5枚取れることを確認済み）。"""
+    global _COIN_MASK
+    if _COIN_MASK is None:
+        from count_and_measure import measure as m
+
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        mask = cv2.dilate(m._foreground_mask(gray, None), np.ones((5, 5), np.uint8))
+        _COIN_MASK = cv2.GaussianBlur(mask.astype(np.float32) / 255, (9, 9), 0)[..., None]
+    return _COIN_MASK
+
+
+def background(img, target):
+    """背景（紙）の明るさを target に下げる。灰色の机の上に置いたときを再現する。
+
+    硬貨の部分はそのまま。背景は明るさの比率だけ下げるので、影や照明のむらは残る。
+    1回目の実験では「明るさ 200 より上の画素だけ置き換える」作り方をしていて、背景が白と灰色の
+    まだらになっていた（本物の机とは違う）。PDCA 3回目でこの作り方に直した。
+    """
+    coin = _coin_mask(img)
+    paper = np.median(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)[coin[..., 0] < 0.01])
+    darker = img.astype(np.float32) * (target / paper)
+    mixed = img.astype(np.float32) * coin + darker * (1 - coin)
     return np.clip(mixed, 0, 255).astype(np.uint8)
 
 
@@ -99,7 +118,7 @@ CONDITIONS = {
     "ノイズ": (noise, [0, 10, 25, 40, 60]),
     "片側の影": (shadow, [0, 0.3, 0.5, 0.7, 0.85]),
     "硬貨を寄せる(px)": (touching, [0, 60, 100, 130, 160]),
-    "背景を灰色に": (background, [0, 0.3, 0.6, 0.8, 1.0]),
+    "背景の明るさ": (background, [225, 190, 170, 150, 120]),
 }
 
 
@@ -119,15 +138,18 @@ def main():
     base = _read_image(ROOT / "tests" / "data" / "japanese_coins.jpg")
     OUT.mkdir(parents=True, exist_ok=True)
     rows = []
+    ok_count = 0
     for name, (fn, levels) in CONDITIONS.items():
         for lv in levels:
             img = fn(base, lv)
             count, err = evaluate(img)
             ok = count == len(TRUTH) and err <= 3.0
+            ok_count += ok
             rows.append([name, lv, count, "" if np.isnan(err) else f"{err:.1f}", "OK" if ok else "NG"])
             print(f"{name:12s} {lv:>6} -> {count} 個, 最大誤差 {err:5.1f}%  {'OK' if ok else 'NG'}")
             if lv == levels[-1] or not ok:
                 cv2.imencode(".jpg", img)[1].tofile(str(OUT / f"{name}_{lv}.jpg"))
+    print(f"== OK {ok_count} / {sum(len(v[1]) for v in CONDITIONS.values())}")
     with open(OUT / "robustness.csv", "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
         w.writerow(["条件", "強さ", "個数(正解5)", "最大誤差(%)", "判定"])
