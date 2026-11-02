@@ -1,0 +1,20 @@
+[workspace]
+name = "count-and-measure"
+description = "写真から物を数えて、大きさを mm で測るツール（OpenCV）"
+channels = ["https://prefix.dev/conda-forge"]
+platforms = ["win-64"]
+
+[dependencies]
+python = "3.12.*"
+opencv = "*"
+numpy = "*"
+pytest = "*"
+
+[tasks]
+sample = "python -m count_and_measure.make_samples samples"
+measure = "python -m count_and_measure.cli"
+marker = "python -m count_and_measure.marker docs/marker_50mm_a4.png"
+test = "pytest -q"
+
+[activation.env]
+PYTHONPATH = "src"
