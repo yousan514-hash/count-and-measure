@@ -22,7 +22,14 @@ IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 def _read_image(path: Path) -> np.ndarray | None:
     # cv2.imread は日本語のパスを読めないので、バイト列から読む
     data = np.fromfile(str(path), dtype=np.uint8)
-    return cv2.imdecode(data, cv2.IMREAD_COLOR)
+    image = cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
+    if image is not None and image.ndim == 3 and image.shape[2] == 4:
+        # 透明な背景は白として扱う
+        alpha = image[:, :, 3:4].astype(np.float32) / 255
+        image = (image[:, :, :3] * alpha + 255 * (1 - alpha)).astype(np.uint8)
+    elif image is not None and image.ndim == 2:
+        image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    return image
 
 
 def _write_image(path: Path, image: np.ndarray) -> None:
@@ -48,6 +55,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--marker-mm", type=float, default=50.0, help="ArUco マーカーの1辺（mm）。既定 50")
     parser.add_argument("--dict", default="4x4_50", choices=sorted(ARUCO_DICTS), help="マーカーの種類")
     parser.add_argument("--min-area-mm2", type=float, default=10.0, help="これより小さいものは無視する（mm²）")
+    parser.add_argument("--ref-mm", type=float, default=None,
+                        help="マーカーの代わりに、大きさがわかっている物を物差しにする（その物の長辺 mm。硬貨なら直径）")
+    parser.add_argument("--ref", default="largest", choices=["largest", "smallest"],
+                        help="物差しにする物（一番大きい物か、一番小さい物）")
+    parser.add_argument("--keep-edge", action="store_true", help="画像の縁に触れている物も数える")
     parser.add_argument("--out", default="results", help="結果の保存先フォルダ")
     args = parser.parse_args(argv)
 
@@ -63,7 +75,7 @@ def main(argv: list[str] | None = None) -> int:
             failed += 1
             continue
         try:
-            result = measure_image(image, args.marker_mm, args.dict, args.min_area_mm2)
+            result = measure_image(image, args.marker_mm, args.dict, args.min_area_mm2, args.ref_mm, args.ref, args.keep_edge)
         except MarkerNotFoundError as e:
             print(f"[skip] {path.name}: {e}", file=sys.stderr)
             failed += 1

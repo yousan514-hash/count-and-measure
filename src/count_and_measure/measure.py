@@ -33,7 +33,7 @@ class MeasuredObject:
 @dataclass
 class MeasureResult:
     mm_per_px: float
-    marker_corners: np.ndarray
+    marker_corners: np.ndarray | None  # 物差しに物を使ったときは None
     objects: list[MeasuredObject]
 
     @property
@@ -60,7 +60,12 @@ def _marker_side_px(corners: np.ndarray) -> float:
     return float(np.mean(sides))
 
 
-def _foreground_mask(gray: np.ndarray, marker_region: np.ndarray) -> np.ndarray:
+def _touches_border(contour: np.ndarray, w: int, h: int, margin: int = 2) -> bool:
+    x, y, cw, ch = cv2.boundingRect(contour)
+    return x <= margin or y <= margin or x + cw >= w - margin or y + ch >= h - margin
+
+
+def _foreground_mask(gray: np.ndarray, marker_region: np.ndarray | None) -> np.ndarray:
     """物を白（255）、背景を黒（0）にした2値画像を返す。"""
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
     # 画像の縁の明るさで、背景が明るい（紙）か暗い（布）かを決める
@@ -68,14 +73,37 @@ def _foreground_mask(gray: np.ndarray, marker_region: np.ndarray) -> np.ndarray:
     background_is_bright = np.median(border) > 127
     # マーカーの黒い部分が大きいと、2値化の境目が暗い側に寄って銀色の物を見落とす。
     # 先にマーカーを背景の明るさで塗りつぶしてから境目を決める。
-    blur = blur.copy()
-    cv2.fillConvexPoly(blur, marker_region, int(np.median(border)))
+    if marker_region is not None:
+        blur = blur.copy()
+        cv2.fillConvexPoly(blur, marker_region, int(np.median(border)))
     mode = cv2.THRESH_BINARY_INV if background_is_bright else cv2.THRESH_BINARY
     _, mask = cv2.threshold(blur, 0, 255, mode | cv2.THRESH_OTSU)
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+
+    # 銀色の物は、光が当たると明るさだけでは背景と見分けにくい。
+    # 輪郭（エッジ）を太らせて閉じた形を作り、明るさで分けた結果と合わせて補う
+    median = float(np.median(blur))
+    edges = cv2.Canny(blur, int(max(0, 0.66 * median) * 0.5), int(min(255, 1.33 * median) * 0.5))
+    edges = cv2.dilate(edges, kernel, iterations=2)
+    # 太らせた分だけ細くして、元の大きさに戻す
+    edge_shapes = cv2.erode(_fill_holes(edges), kernel, iterations=2)
+    mask = cv2.bitwise_or(mask, edge_shapes)
+
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
-    return mask
+    # 5円玉や50円玉の穴、物の表面の模様のすき間を埋める
+    return _fill_holes(mask)
+
+
+def _fill_holes(mask: np.ndarray) -> np.ndarray:
+    """白い領域の中にある黒い穴を埋める（画像の縁につながる黒は背景として残す）。"""
+    h, w = mask.shape
+    flood = np.zeros((h + 2, w + 2), np.uint8)
+    filled = mask.copy()
+    cv2.floodFill(filled, flood, (0, 0), 255)
+    # 縁から塗れなかった黒＝穴
+    holes = cv2.bitwise_not(filled)
+    return cv2.bitwise_or(mask, holes)
 
 
 def measure_image(
@@ -83,23 +111,63 @@ def measure_image(
     marker_mm: float = 50.0,
     dict_name: str = "4x4_50",
     min_area_mm2: float = 10.0,
+    ref_mm: float | None = None,
+    ref: str = "largest",
+    keep_edge: bool = False,
 ) -> MeasureResult:
-    """画像（BGR）の中の物を数えて測る。marker_mm はマーカーの黒い四角の1辺（mm）。"""
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
-    corners = detect_marker(gray, dict_name)
-    mm_per_px = marker_mm / _marker_side_px(corners)
+    """画像（BGR）の中の物を数えて測る。
 
-    # マーカーと、その周りの白い余白を物として数えないようにする
-    center = corners.mean(axis=0)
-    marker_region = ((corners - center) * 1.6 + center).astype(np.int32)
-    mask = _foreground_mask(gray, marker_region)
-    cv2.fillConvexPoly(mask, marker_region, 0)
+    物差しは2通り:
+    - ArUco マーカー（既定）: marker_mm はマーカーの黒い四角の1辺（mm）
+    - 大きさがわかっている物: ref_mm にその物の長辺（硬貨なら直径）を入れ、ref で
+      "largest"（一番大きい物）か "smallest"（一番小さい物）を選ぶ。マーカーがなくても測れる
+
+    keep_edge=True にすると、画像の縁に触れている物も数える（ぎりぎりで切り抜いた画像向け）。
+    """
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+    pad = 0
+    if keep_edge:
+        # 縁に背景色の余白を足して、縁に触れた物も閉じた輪郭にする
+        border = np.concatenate([gray[0, :], gray[-1, :], gray[:, 0], gray[:, -1]])
+        pad = 20
+        gray = cv2.copyMakeBorder(gray, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=int(np.median(border)))
+
+    if ref_mm is None:
+        corners = detect_marker(gray, dict_name)
+        mm_per_px = marker_mm / _marker_side_px(corners)
+        # マーカーと、その周りの白い余白を物として数えないようにする
+        center = corners.mean(axis=0)
+        marker_region = ((corners - center) * 1.6 + center).astype(np.int32)
+        mask = _foreground_mask(gray, marker_region)
+        cv2.fillConvexPoly(mask, marker_region, 0)
+    else:
+        corners = None
+        mask = _foreground_mask(gray, None)
 
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    h, w = gray.shape
+    if pad:
+        # 足した余白の分だけ座標を戻す
+        contours = [c - pad for c in contours]
+        h, w = h - 2 * pad, w - 2 * pad
+    else:
+        # 画像の縁に触れている輪郭は、写り切っていない物か背景のむらなので除く
+        contours = [c for c in contours if not _touches_border(c, w, h)]
+
+    if ref_mm is not None:
+        # 大きさがまだわからないので、まずは画像の 0.05% より小さいゴミだけ除く
+        contours = [c for c in contours if cv2.contourArea(c) >= h * w * 5e-4]
+        if not contours:
+            raise MarkerNotFoundError("物差しにする物が見つかりません。")
+        pick = max if ref == "largest" else min
+        ref_contour = pick(contours, key=cv2.contourArea)
+        mm_per_px = ref_mm / max(cv2.minAreaRect(ref_contour)[1])
+
     min_area_px = min_area_mm2 / (mm_per_px**2)
     contours = [c for c in contours if cv2.contourArea(c) >= min_area_px]
     # 左上から右下へ、読む順に番号を振る
-    contours.sort(key=lambda c: (cv2.boundingRect(c)[1] // 50, cv2.boundingRect(c)[0]))
+    row = max(50, h // 8)
+    contours.sort(key=lambda c: (cv2.boundingRect(c)[1] // row, cv2.boundingRect(c)[0]))
 
     objects = []
     for i, c in enumerate(contours, start=1):
@@ -116,13 +184,16 @@ def measure_image(
                 contour=c,
             )
         )
+    if corners is not None and pad:
+        corners = corners - pad
     return MeasureResult(mm_per_px=mm_per_px, marker_corners=corners, objects=objects)
 
 
 def annotate(image: np.ndarray, result: MeasureResult) -> np.ndarray:
     """結果を書き込んだ画像を返す。"""
     out = image.copy()
-    cv2.polylines(out, [result.marker_corners.astype(np.int32)], True, (255, 0, 255), 3)
+    if result.marker_corners is not None:
+        cv2.polylines(out, [result.marker_corners.astype(np.int32)], True, (255, 0, 255), 3)
     for obj in result.objects:
         cv2.drawContours(out, [obj.contour], -1, (0, 200, 0), 3)
         x, y = int(obj.center_px[0]), int(obj.center_px[1])
