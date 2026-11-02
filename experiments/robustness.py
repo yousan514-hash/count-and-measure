@@ -123,6 +123,23 @@ def background(img, target):
     return np.clip(mixed, 0, 255).astype(np.uint8)
 
 
+def cast_shadow(img, strength):
+    """物が落とす影（横から強い光が当たったとき）。硬貨の形を右下にずらしてぼかし、紙の上だけ暗くする。"""
+    if strength == 0:
+        return img
+    # ぼかした範囲のまま使うと、硬貨のまわりに影のない白い輪ができるので、くっきりした範囲を使う
+    coin = (_coin_mask(img)[..., 0] > 0.5).astype(np.uint8)
+    coin = cv2.erode(coin, np.ones((5, 5), np.uint8))  # 膨らませてあった分を戻す
+    h, w = coin.shape
+    off = int(0.02 * max(h, w))  # 影のずれ（画像の 2%）
+    M = np.float32([[1, 0, off], [0, 1, off]])
+    sh = cv2.warpAffine(coin.astype(np.float32), M, (w, h))
+    sh = cv2.GaussianBlur(sh, (0, 0), off / 3)
+    sh = sh * (1 - coin)  # 硬貨の上には影を落とさない
+    out = img.astype(np.float32) * (1 - strength * sh[..., None])
+    return np.clip(out, 0, 255).astype(np.uint8)
+
+
 CONDITIONS = {
     "傾き(度)": (tilt, [0, 10, 20, 30, 40]),
     "暗さ": (dark, [0, 0.3, 0.5, 0.7, 0.85]),
@@ -131,6 +148,7 @@ CONDITIONS = {
     "片側の影": (shadow, [0, 0.3, 0.5, 0.7, 0.85]),
     "硬貨を寄せる(px)": (touching, [0, 60, 100, 130, 160]),
     "背景の明るさ": (background, [225, 190, 170, 150, 120]),
+    "物が落とす影": (cast_shadow, [0, 0.2, 0.35, 0.5, 0.65]),
 }
 
 
