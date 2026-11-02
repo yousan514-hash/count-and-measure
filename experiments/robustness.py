@@ -65,20 +65,24 @@ def shadow(img, strength):
 
 
 def touching(img, px):
-    """硬貨を寄せて置いた（右下の1円玉を左に動かして10円玉に近づける）。px は動かす量。"""
+    """硬貨を寄せて置いた（右下の1円玉を左に動かして10円玉に近づける）。px は動かす量。
+
+    1円玉の形だけを切り出して動かし、元の場所は周りの紙の色で埋める（inpaint）。
+    PDCA 2回目までは四角く切り取って貼っていたため、灰色の四角い継ぎ目が残っていた。
+    """
     if px == 0:
         return img
-    out = img.copy()
-    y0, y1, x0, x1 = 640, 1070, 1130, 1540  # 1円玉のまわり
-    patch = img[y0:y1, x0:x1].copy()
-    bg = np.median(img[20:80, 20:80].reshape(-1, 3), axis=0)
-    out[y0:y1, x0:x1] = bg
-    nx0 = max(0, x0 - int(px))
-    # 背景と同じくらい明るい画素は貼らない（四角い切れ目を作らない）
-    gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
-    keep = gray < np.median(gray[:20, :20]) - 12
-    region = out[y0:y1, nx0:nx0 + patch.shape[1]]
-    region[keep[:, :region.shape[1]]] = patch[:, :region.shape[1]][keep[:, :region.shape[1]]]
+    coin = (_coin_mask(img)[..., 0] > 0.5).astype(np.uint8)
+    n, labels, stats, cent = cv2.connectedComponentsWithStats(coin)
+    # 右下の硬貨（中心が一番右下にあるもの）を1円玉とする
+    target = max(range(1, n), key=lambda i: cent[i][0] + cent[i][1])
+    one = (labels == target).astype(np.uint8) * 255
+    one = cv2.dilate(one, np.ones((7, 7), np.uint8))
+    out = cv2.inpaint(img, one, 7, cv2.INPAINT_TELEA)
+    M = np.float32([[1, 0, -px], [0, 1, 0]])
+    moved_coin = cv2.warpAffine(img, M, (img.shape[1], img.shape[0]))
+    moved_mask = cv2.warpAffine(one, M, (img.shape[1], img.shape[0])) > 0
+    out[moved_mask] = moved_coin[moved_mask]
     return out
 
 
@@ -92,7 +96,15 @@ def _coin_mask(img):
         from count_and_measure import measure as m
 
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        mask = cv2.dilate(m._foreground_mask(gray, None), np.ones((5, 5), np.uint8))
+        raw = m._foreground_mask(gray, None)
+        # 画像の端に触れない大きな形（＝硬貨5枚）だけを残す。端の明るいむらを硬貨と間違えない
+        h, w = gray.shape
+        contours, _ = cv2.findContours(raw, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours = [c for c in contours if not m._touches_border(c, w, h)]
+        contours = sorted(contours, key=cv2.contourArea, reverse=True)[: len(TRUTH)]
+        mask = np.zeros_like(raw)
+        cv2.drawContours(mask, contours, -1, 255, -1)
+        mask = cv2.dilate(mask, np.ones((5, 5), np.uint8))
         _COIN_MASK = cv2.GaussianBlur(mask.astype(np.float32) / 255, (9, 9), 0)[..., None]
     return _COIN_MASK
 
