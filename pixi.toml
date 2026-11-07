@@ -18,3 +18,5 @@ test = "pytest -q"
 
 [activation.env]
 PYTHONPATH = "src"
+# 日本語を表示するので、Windows の文字コード（cp1252・cp932）に関係なく UTF-8 で動かす
+PYTHONUTF8 = "1"
